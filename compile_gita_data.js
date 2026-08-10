@@ -117,6 +117,26 @@ if (fs.existsSync(RAW_DIR)) {
         }
     }
 
+    // 4. Parse en.json (Translations, Explanations, Word Meanings)
+    const enJsonPath = path.join(RAW_DIR, 'en.json');
+    if (fs.existsSync(enJsonPath)) {
+        const enData = JSON.parse(fs.readFileSync(enJsonPath, 'utf8'));
+        let enCount = 0;
+        for (const [key, data] of Object.entries(enData)) {
+            // Convert "1-1" to "1:1" to match our schema
+            const verseId = key.replace('-', ':');
+            if (!compiledData.verses[verseId]) compiledData.verses[verseId] = {};
+            
+            compiledData.verses[verseId].translation = data.translation || "";
+            compiledData.verses[verseId].explanation = data.explanation || "";
+            compiledData.verses[verseId].word_meanings = data.wordMeanings || "";
+            enCount++;
+        }
+        console.log(`➡️ Extracted English data for ${enCount} verses.`);
+    } else {
+        console.log(`⚠️ en.json not found in ${RAW_DIR}`);
+    }
+
     fs.writeFileSync(OUTPUT_FILE, JSON.stringify(compiledData, null, 4));
     console.log(`\n🎉 Success! Unified data saved to: ./gita_assets/gita_data.json`);
 } else {

@@ -75,7 +75,47 @@ def colorize_tags(tag_string):
     tag_string = tag_string.replace("Avyaya (Indeclinable)", ":orange[Avyaya]")
     return tag_string
 
-def process_tokens(tokens):
+def parse_contextual_meanings(meaning_str):
+    if not meaning_str: return {}
+    mapping = {}
+    pairs = meaning_str.split(';')
+    for pair in pairs:
+        if '—' in pair:
+            parts = pair.split('—', 1)
+        elif ' - ' in pair:
+            parts = pair.split(' - ', 1)
+        else:
+            continue
+            
+        if len(parts) >= 2:
+            raw_iast = parts[0].strip()
+            meaning = parts[1].strip()
+            
+            clean_iast = raw_iast.replace('kṣh', 'kṣ')
+            clean_iast = clean_iast.replace('śht', 'ṣṭ') 
+            clean_iast = clean_iast.replace('śh', 'ś')
+            clean_iast = clean_iast.replace('sh', 'ṣ')
+            clean_iast = clean_iast.replace('ch', 'c')
+            clean_iast = clean_iast.replace('ṛi', 'ṛ')
+            
+            try:
+                # 1. Convert to Devanagari keeping hyphens 
+                deva_key_hyphenated = transliterate(clean_iast, sanscript.IAST, sanscript.DEVANAGARI)
+                # 2. Create a second version without hyphens 
+                deva_key_solid = deva_key_hyphenated.replace("-", "")
+                
+                # Map BOTH versions to the dictionary
+                mapping[deva_key_hyphenated] = meaning
+                mapping[deva_key_solid] = meaning
+            except:
+                mapping[raw_iast] = meaning 
+    return mapping
+
+# --- UPDATED FUNCTION SIGNATURE (Fixes the Line 344 Error) ---
+def process_tokens(tokens, contextual_dict=None):
+    if contextual_dict is None:
+        contextual_dict = {}
+        
     analysis_results = []
     detailed_views = [] 
     
@@ -83,6 +123,17 @@ def process_tokens(tokens):
         lookup_token = token
         if lookup_token.endswith("ं"):
             lookup_token = lookup_token[:-1] + "म्"
+            
+        if token in contextual_dict:
+            meaning = contextual_dict[token]
+            analysis_results.append({"Word": token, "Meaning(s)": meaning, "Status": "✨ Verse Context"})
+            detailed_views.append({"word": token, "status": "contextual", "meaning": meaning})
+            continue
+        elif lookup_token in contextual_dict:
+            meaning = contextual_dict[lookup_token]
+            analysis_results.append({"Word": token, "Meaning(s)": meaning, "Status": "✨ Verse Context"})
+            detailed_views.append({"word": token, "status": "contextual", "meaning": meaning})
+            continue
             
         db_response = query_database(lookup_token)
         
@@ -131,7 +182,12 @@ def process_tokens(tokens):
 
 def render_detailed_views(detailed_views):
     for item in detailed_views:
-        if item["status"] == "sutra":
+        if item["status"] == "contextual":
+            with st.expander(f"✨ **{item['word']}** (Verse Context)"):
+                st.markdown(f"<span class='badge-gita'>Contextual Definition</span>", unsafe_allow_html=True)
+                st.markdown(f"**Meaning:** {item['meaning']}")
+                
+        elif item["status"] == "sutra":
             with st.expander(f"📜 **Sūtra {item['word']}** - {item['deva']}"):
                 st.markdown(f"<span class='badge-sutra'>{item['type']}</span>", unsafe_allow_html=True)
                 st.markdown(f"**Devanāgarī:** `{item['deva']}` | **SLP1:** `{item['slp1']}`")
@@ -193,6 +249,7 @@ def color_rows(val):
     elif val == '📘 Technical Term': return 'background-color: #B5C6D8; color: black;'
     elif val == '📜 Sūtra': return 'background-color: #E6B97A; color: black;'
     elif val == '🕉️ Gītā Glossary': return 'background-color: #FFF2CC; color: black;'
+    elif val == '✨ Verse Context': return 'background-color: #d1ecf1; color: black;' 
     return 'background-color: #e6ffe6; color: black;' if val == '✅ Recognized' else ''
 
 st.markdown("<h1 style='color: #2B3A55; font-family: Georgia, serif;'>Sanskrit Morphological Analyzer</h1>", unsafe_allow_html=True)
@@ -247,8 +304,7 @@ with tab2:
             
         verse_id = f"{selected_chapter}:{selected_verse}"
         
-        # EXTRACTING THE NEW COLUMNS HERE
-        cursor.execute("SELECT text_sa, text_iast, overrides, pada_sa, pada_iast, anvaya_sa, anvaya_iast FROM gita_verses WHERE id = ?", (verse_id,))
+        cursor.execute("SELECT text_sa, text_iast, overrides, pada_sa, pada_iast, anvaya_sa, anvaya_iast, translation, explanation, word_meanings FROM gita_verses WHERE id = ?", (verse_id,))
         verse_data = cursor.fetchone()
         
         if verse_data:
@@ -258,6 +314,9 @@ with tab2:
             pada_iast = verse_data[4]
             anvaya_sa = verse_data[5]
             anvaya_iast = verse_data[6]
+            translation = verse_data[7]
+            explanation = verse_data[8]
+            word_meanings_str = verse_data[9]
             
             img_path = os.path.join("gita_assets", "images", f"ch{selected_chapter}", f"page_{selected_verse + 1}.webp")
             if os.path.exists(img_path):
@@ -275,9 +334,19 @@ with tab2:
                 with v_tab1:
                     for line in text_sa:
                         st.markdown(f"**{line}**")
+                        
+                    if translation:
+                        st.markdown("---")
+                        st.markdown(f"**Translation:** {translation}")
+                    if explanation:
+                        st.info(f"**Explanation:** {explanation}")
                 
                 with v_tab2:
-                    # RENDER THE NEW HORIZONTAL TEXT
+                    if word_meanings_str:
+                        st.markdown("**Contextual Word Meanings:**")
+                        st.caption(word_meanings_str)
+                        st.markdown("---")
+                        
                     if anvaya_sa:
                         st.markdown(f"**Anvaya (Prose Order):** {anvaya_sa}")
                         st.markdown(f"*{anvaya_iast}*")
@@ -297,7 +366,9 @@ with tab2:
                             else:
                                 final_tokens.append(w)
                     
-                    analysis_results, detailed_views = process_tokens(final_tokens)
+                    contextual_dict = parse_contextual_meanings(word_meanings_str)
+                    analysis_results, detailed_views = process_tokens(final_tokens, contextual_dict)
+                    
                     if analysis_results:
                         df = pd.DataFrame(analysis_results)
                         st.dataframe(df.style.map(color_rows, subset=['Status']), use_container_width=True, hide_index=True)

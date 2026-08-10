@@ -43,7 +43,10 @@ def build_database():
             pada_sa TEXT,
             pada_iast TEXT,
             anvaya_sa TEXT,
-            anvaya_iast TEXT
+            anvaya_iast TEXT,
+            translation TEXT,
+            explanation TEXT,
+            word_meanings TEXT
         )
     ''')
     
@@ -131,15 +134,20 @@ def build_database():
             overrides = json.dumps(v_data.get("overrides", {}), ensure_ascii=False)
             
             # Extract new Pada and Anvaya data
-            pada_sa = v_data.get("pada_sa", "")
             pada_iast = v_data.get("pada_iast", "")
+            pada_sa = v_data.get("pada_sa", "")
             anvaya_sa = v_data.get("anvaya_sa", "")
             anvaya_iast = v_data.get("anvaya_iast", "")
             
-            verse_rows.append((v_id, ch, vs, text_sa, text_iast, overrides, pada_sa, pada_iast, anvaya_sa, anvaya_iast))
+            # NEW: Extract English Data
+            translation = v_data.get("translation", "")
+            explanation = v_data.get("explanation", "")
+            word_meanings = v_data.get("word_meanings", "")
+            
+            verse_rows.append((v_id, ch, vs, text_sa, text_iast, overrides, pada_sa, pada_iast, anvaya_sa, anvaya_iast, translation, explanation, word_meanings))
             
         if verse_rows:
-            cursor.executemany('INSERT OR IGNORE INTO gita_verses VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', verse_rows)
+            cursor.executemany('INSERT OR IGNORE INTO gita_verses VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', verse_rows)
             print(f"   -> Inserted {len(verse_rows):,} Gītā verses.")
             
         glossary = gita_data.get("glossary", {})
