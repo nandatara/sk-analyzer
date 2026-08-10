@@ -13,44 +13,44 @@ def build_database():
     
     print("1. Creating SQLite tables...")
     
-    # 1. Primary Engine
     cursor.execute('CREATE TABLE IF NOT EXISTS dictionary (word TEXT, pos TEXT, meaning TEXT)')
-    
-    # 2. Amarakośa
     cursor.execute('CREATE TABLE IF NOT EXISTS amarakosha (word TEXT PRIMARY KEY, artha TEXT, synonyms TEXT, linga TEXT)')
     
-    # 3. Mini Aṣṭādhyāyī Glossary (Expanded Schema)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS ashtadhyayi (
-            word TEXT PRIMARY KEY,
-            id TEXT,
-            iast TEXT,
-            slp1 TEXT,
-            aliases TEXT,
-            meaning TEXT,
-            members TEXT
+            word TEXT PRIMARY KEY, id TEXT, iast TEXT, slp1 TEXT, 
+            aliases TEXT, meaning TEXT, members TEXT
         )
     ''')
     
-    # 4. Mini Aṣṭādhyāyī Sūtras (Expanded Schema)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS sutras (
-            id TEXT PRIMARY KEY, 
-            slp1 TEXT, 
-            slp1Display TEXT,
-            type TEXT,
-            typeDisplay TEXT,
-            uddeshya TEXT, 
-            vidheya TEXT, 
-            meaning TEXT,
-            explanation TEXT,
-            anuvritti TEXT,
-            adhikara TEXT,
-            examples TEXT,
-            related TEXT,
-            glossary TEXT,
-            notes TEXT,
-            searchAliases TEXT
+            id TEXT PRIMARY KEY, slp1 TEXT, slp1Display TEXT, type TEXT, typeDisplay TEXT,
+            uddeshya TEXT, vidheya TEXT, meaning TEXT, explanation TEXT, anuvritti TEXT,
+            adhikara TEXT, examples TEXT, related TEXT, glossary TEXT, notes TEXT, searchAliases TEXT
+        )
+    ''')
+    
+    # NEW: Expanded Gītā Verses Table to hold Pada and Anvaya
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS gita_verses (
+            id TEXT PRIMARY KEY,
+            chapter INTEGER,
+            verse INTEGER,
+            text_sa TEXT,
+            text_iast TEXT,
+            overrides TEXT,
+            pada_sa TEXT,
+            pada_iast TEXT,
+            anvaya_sa TEXT,
+            anvaya_iast TEXT
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS gita_glossary (
+            word TEXT PRIMARY KEY,
+            meaning TEXT
         )
     ''')
     
@@ -71,88 +71,87 @@ def build_database():
         cursor.executemany('INSERT OR IGNORE INTO amarakosha VALUES (?, ?, ?, ?)', amara_rows)
         print(f"   -> Inserted {len(amara_rows):,} synonym entries.")
 
-    print("4. Importing Mini Aṣṭādhyāyī Terminology (JSON)...")
+    print("4. Importing Mini Aṣṭādhyāyī Terminology...")
     ash_rows = []
     for file in ["glossary.json", "pratyahara.json"]:
         if os.path.exists(file):
             with open(file, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 for item in data:
-                    # --- NEW SAFEGUARD ---
-                    if not isinstance(item, dict):
-                        continue
-                        
+                    if not isinstance(item, dict): continue
                     word = item.get("devanagari", "").strip()
-                    if not word:
-                        continue
-                    
-                    item_id = item.get("id", "")
-                    iast = item.get("iast", "")
-                    slp1 = item.get("slp1", "")
-                    meaning = item.get("meaning", "")
-                    
-                    aliases = json.dumps(item.get("aliases", []), ensure_ascii=False)
-                    members = json.dumps(item.get("members", []), ensure_ascii=False)
-                    
-                    ash_rows.append((word, item_id, iast, slp1, aliases, meaning, members))
-    
+                    if not word: continue
+                    ash_rows.append((
+                        word, item.get("id", ""), item.get("iast", ""), item.get("slp1", ""),
+                        json.dumps(item.get("aliases", []), ensure_ascii=False),
+                        item.get("meaning", ""),
+                        json.dumps(item.get("members", []), ensure_ascii=False)
+                    ))
     if ash_rows:
-        cursor.executemany('''
-            INSERT OR IGNORE INTO ashtadhyayi 
-            (word, id, iast, slp1, aliases, meaning, members) 
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', ash_rows)
+        cursor.executemany('INSERT OR IGNORE INTO ashtadhyayi VALUES (?, ?, ?, ?, ?, ?, ?)', ash_rows)
         print(f"   -> Inserted {len(ash_rows):,} technical terms & pratyāhāras.")
 
-    print("5. Importing Mini Aṣṭādhyāyī Sūtras (JSON)...")
+    print("5. Importing Mini Aṣṭādhyāyī Sūtras...")
     sutra_rows = []
     for file in ["sutras-1-1.json", "sutras-1-2.json"]:
         if os.path.exists(file):
             with open(file, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 for item in data:
-                    # --- NEW SAFEGUARD ---
-                    if not isinstance(item, dict):
-                        continue
-                        
+                    if not isinstance(item, dict): continue
                     s_id = item.get("id", "")
-                    if not s_id:
-                        continue
-                        
-                    slp1 = item.get("slp1", "")
-                    slp1Disp = item.get("slp1Display", "")
-                    sType = item.get("type", "")
-                    typeDisp = item.get("typeDisplay", "")
-                    udd = item.get("uddeshya", "")
-                    vid = item.get("vidheya", "")
-                    
-                    meaning = item.get("meaning", "")
-                    expl = item.get("explanation", item.get("purpose", ""))
-                    anuv = item.get("anuvritti", "")
-                    adhi = item.get("adhikara", "")
-                    notes = item.get("notes", "")
-                    
-                    examples = json.dumps(item.get("examples", []), ensure_ascii=False)
-                    related = json.dumps(item.get("related", []), ensure_ascii=False)
-                    glossary = json.dumps(item.get("glossary", []), ensure_ascii=False)
-                    searchAl = json.dumps(item.get("searchAliases", []), ensure_ascii=False)
-                    
+                    if not s_id: continue
                     sutra_rows.append((
-                        s_id, slp1, slp1Disp, sType, typeDisp, 
-                        udd, vid, meaning, expl, anuv, adhi, 
-                        examples, related, glossary, notes, searchAl
+                        s_id, item.get("slp1", ""), item.get("slp1Display", ""), item.get("type", ""), item.get("typeDisplay", ""),
+                        item.get("uddeshya", ""), item.get("vidheya", ""), item.get("meaning", ""), 
+                        item.get("explanation", item.get("purpose", "")), item.get("anuvritti", ""), item.get("adhikara", ""),
+                        json.dumps(item.get("examples", []), ensure_ascii=False), json.dumps(item.get("related", []), ensure_ascii=False),
+                        json.dumps(item.get("glossary", []), ensure_ascii=False), item.get("notes", ""), 
+                        json.dumps(item.get("searchAliases", []), ensure_ascii=False)
                     ))
-
     if sutra_rows:
-        cursor.executemany('''
-            INSERT OR IGNORE INTO sutras 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', sutra_rows)
+        cursor.executemany('INSERT OR IGNORE INTO sutras VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', sutra_rows)
         print(f"   -> Inserted {len(sutra_rows):,} Pāṇinian Sūtras.")
 
-    print("6. Creating Indexes...")
+    print("6. Importing Bhagavad Gītā Data...")
+    gita_file = os.path.join("gita_assets", "gita_data.json")
+    if os.path.exists(gita_file):
+        with open(gita_file, "r", encoding="utf-8") as f:
+            gita_data = json.load(f)
+            
+        verses = gita_data.get("verses", {})
+        verse_rows = []
+        for v_id, v_data in verses.items():
+            parts = v_id.split(":")
+            ch = int(parts[0]) if len(parts) == 2 else 0
+            vs = int(parts[1]) if len(parts) == 2 else 0
+            
+            text_sa = json.dumps(v_data.get("text", {}).get("sa", []), ensure_ascii=False)
+            text_iast = json.dumps(v_data.get("text", {}).get("iast", []), ensure_ascii=False)
+            overrides = json.dumps(v_data.get("overrides", {}), ensure_ascii=False)
+            
+            # Extract new Pada and Anvaya data
+            pada_sa = v_data.get("pada_sa", "")
+            pada_iast = v_data.get("pada_iast", "")
+            anvaya_sa = v_data.get("anvaya_sa", "")
+            anvaya_iast = v_data.get("anvaya_iast", "")
+            
+            verse_rows.append((v_id, ch, vs, text_sa, text_iast, overrides, pada_sa, pada_iast, anvaya_sa, anvaya_iast))
+            
+        if verse_rows:
+            cursor.executemany('INSERT OR IGNORE INTO gita_verses VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', verse_rows)
+            print(f"   -> Inserted {len(verse_rows):,} Gītā verses.")
+            
+        glossary = gita_data.get("glossary", {})
+        glossary_rows = [(word, meaning) for word, meaning in glossary.items()]
+        if glossary_rows:
+            cursor.executemany('INSERT OR IGNORE INTO gita_glossary VALUES (?, ?)', glossary_rows)
+            print(f"   -> Inserted {len(glossary_rows):,} Gītā glossary entries.")
+
+    print("7. Creating Indexes...")
     cursor.execute('CREATE INDEX idx_dictionary_word ON dictionary(word)')
     cursor.execute('CREATE INDEX idx_ashtadhyayi_word ON ashtadhyayi(word)')
+    cursor.execute('CREATE INDEX idx_gita_chapter ON gita_verses(chapter)')
     
     conn.commit()
     conn.close()
