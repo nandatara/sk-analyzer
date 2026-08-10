@@ -1,0 +1,23 @@
+# Python environment
+__pycache__/
+*.pyc
+
+# Massive Database Files (Generated locally)
+analyzer_db.json
+sanskrit_engine.db
+
+# Generated JSON files (Optional, since the .js files are the source of truth)
+glossary.json
+pratyahara.json
+sutras-1-1.json
+sutras-1-2.json
+
+# Synonyms
+amara.json
+
+# Folders
+/charts
+/data
+/html-tables
+/latex
+/python
