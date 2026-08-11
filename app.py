@@ -287,89 +287,109 @@ with tab2:
             
         verse_id = f"{selected_chapter}:{selected_verse}"
         
-        # Pulling ONLY from the new schema
-        # Pulling the newly integrated text columns
-        cursor.execute("SELECT text_sa, text_iast, pada_sa, pada_iast, anvaya_sa, anvaya_iast, analysis FROM gita_verses WHERE id = ?", (verse_id,))
+       # Pulling the 8 columns, including translations at index 7
+        cursor.execute("SELECT text_sa, text_iast, pada_sa, pada_iast, anvaya_sa, anvaya_iast, analysis, translations FROM gita_verses WHERE id = ?", (verse_id,))
         verse_data = cursor.fetchone()
         
         if verse_data:
-            # 1. Force the database string into a proper Python list
             raw_sa = verse_data[0]
             raw_iast = verse_data[1]
             pada_sa = verse_data[2]
             pada_iast = verse_data[3]
             anvaya_sa = verse_data[4]
             anvaya_iast = verse_data[5]
+            raw_translations = verse_data[7]
 
             try:
                 text_sa_list = json.loads(raw_sa) if raw_sa else []
                 if not isinstance(text_sa_list, list): text_sa_list = []
-            except:
-                text_sa_list = []
+            except: text_sa_list = []
 
             try:
                 text_iast_list = json.loads(raw_iast) if raw_iast else []
                 if not isinstance(text_iast_list, list): text_iast_list = []
-            except:
-                text_iast_list = []
+            except: text_iast_list = []
+                
+            try:
+                translations_list = json.loads(raw_translations) if raw_translations else []
+                if not isinstance(translations_list, list): translations_list = []
+            except: translations_list = []
 
-            # 2. Join with HTML line breaks, or fallback ONLY if the list is completely empty
             formatted_sa = "<br>".join(text_sa_list) if text_sa_list else pada_sa
             formatted_iast = "<br>".join(text_iast_list) if text_iast_list else pada_iast
             
-            # 3. Render the Card
-            html_card = f"""
-            <div style="max-width: 900px; margin: 0 auto 20px auto; background-color: #FDFBF7; border: 1px solid #EAE3D1; box-shadow: 2px 4px 10px rgba(0,0,0,0.05);">
-                <div style="background-color: #002B5B; color: white; padding: 12px 25px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 26px; font-weight: bold; letter-spacing: 0.5px;">
-                    Bhagavad Gita Chapter {selected_chapter}.
+            # --- SPLIT LAYOUT: Main Content (Left) | Translations (Right) ---
+            left_col, right_col = st.columns([1.3, 1]) # Left column slightly wider
+            
+            with left_col:
+                html_card = f"""
+                <div style="max-width: 100%; margin: 0 auto 20px auto; background-color: #FDFBF7; border: 1px solid #EAE3D1; box-shadow: 2px 4px 10px rgba(0,0,0,0.05); border-radius: 8px;">
+                    <div style="background-color: #002B5B; color: white; padding: 12px 25px; border-radius: 8px 8px 0 0; font-family: 'Segoe UI', sans-serif; font-size: 24px; font-weight: bold;">
+                        Bhagavad Gita Chapter {selected_chapter}.
+                    </div>
+                    <div style="padding: 25px 35px;">
+                        <div style="color: #4A235A; font-family: 'Segoe UI', sans-serif; font-size: 18px; font-weight: 600; margin-bottom: 15px;">
+                            Verse {selected_verse}.
+                        </div>
+                        <div style="font-family: 'Sanskrit 2003', 'Mangal', sans-serif; font-size: 26px; line-height: 1.6; color: #111; margin-left: 20px; margin-bottom: 25px;">
+                            {formatted_sa}
+                        </div>
+                        <div style="color: #4A235A; font-family: 'Segoe UI', sans-serif; font-size: 18px; font-weight: 600; margin-bottom: 15px;">
+                            Transliteration
+                        </div>
+                        <div style="font-family: 'Arial Unicode MS', 'Segoe UI', sans-serif; font-size: 20px; line-height: 1.6; color: #111; margin-left: 20px;">
+                            {formatted_iast}
+                        </div>
+                    </div>
                 </div>
-                <div style="padding: 30px 40px;">
-                    <div style="color: #4A235A; font-family: 'Segoe UI', sans-serif; font-size: 20px; font-weight: 500; margin-bottom: 15px;">
-                        Verse {selected_verse}.
-                    </div>
-                    <div style="font-family: 'Sanskrit 2003', 'Mangal', sans-serif; font-size: 28px; line-height: 1.6; color: #111; margin-left: 30px; margin-bottom: 30px;">
-                        {formatted_sa}
-                    </div>
-                    <div style="color: #4A235A; font-family: 'Segoe UI', sans-serif; font-size: 20px; font-weight: 500; margin-bottom: 15px;">
-                        Transliteration
-                    </div>
-                    <div style="font-family: 'Arial Unicode MS', 'Segoe UI', sans-serif; font-size: 22px; line-height: 1.6; color: #111; margin-left: 30px;">
-                        {formatted_iast}
-                    </div>
-                </div>
-            </div>
-            """
-            
-            st.markdown(html_card, unsafe_allow_html=True)
-            st.markdown("---")
-            
-            # Temporary note acknowledging the translations/samhita are offline while we restructure
-            st.info("💡 **Note:** Saṃhitā Pāṭha and general verse translations are temporarily offline pending integration into the new `grammar-db.js` architecture.")
-            
-            v_tab1, v_tab2 = st.tabs(["Padapāṭha & Anvaya", "Morphology Analyzer"])
-            
-            with v_tab1:
-                if anvaya_sa:
-                    st.markdown(f"**Anvaya (Prose Order):** {anvaya_sa}")
-                    st.markdown(f"*{anvaya_iast}*")
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    
-                if pada_sa:
-                    st.markdown(f"**Padapāṭha (Split Words):** {pada_sa}")
-                    st.markdown(f"*{pada_iast}*")
-                    st.markdown("---")
-            
-            with v_tab2:
-                # 🚀 NO MORE OVERRIDES! Feed the pre-split Padapāṭha straight to the analyzer
-                final_tokens = tokenize_text(pada_sa) if pada_sa else []
+                """
+                st.markdown(html_card, unsafe_allow_html=True)
                 
-                analysis_results, detailed_views = process_tokens(final_tokens)
+                # Tabs nested inside the left column
+                v_tab1, v_tab2 = st.tabs(["Padapāṭha & Anvaya", "Morphology Analyzer"])
+                with v_tab1:
+                    if anvaya_sa:
+                        st.markdown(f"**Anvaya (Prose Order):** {anvaya_sa}")
+                        st.markdown(f"*{anvaya_iast}*")
+                        st.markdown("<br>", unsafe_allow_html=True)
+                    if pada_sa:
+                        st.markdown(f"**Padapāṭha (Split Words):** {pada_sa}")
+                        st.markdown(f"*{pada_iast}*")
                 
-                if analysis_results:
-                    df = pd.DataFrame(analysis_results)
-                    st.dataframe(df.style.map(color_rows, subset=['Status']), use_container_width=True, hide_index=True)
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    render_detailed_views(detailed_views)
+                with v_tab2:
+                    final_tokens = tokenize_text(pada_sa) if pada_sa else []
+                    analysis_results, detailed_views = process_tokens(final_tokens)
+                    if analysis_results:
+                        df = pd.DataFrame(analysis_results)
+                        st.dataframe(df.style.map(color_rows, subset=['Status']), use_container_width=True, hide_index=True)
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        render_detailed_views(detailed_views)
+
+            with right_col:
+                # Build Scrollable HTML Container for Translations
+                trans_html = "<div style='height: 700px; overflow-y: auto; padding: 25px; background-color: #FDFBF7; border: 1px solid #EAE3D1; box-shadow: 2px 4px 10px rgba(0,0,0,0.05); border-radius: 8px;'>"
+                trans_html += "<h3 style='color: #002B5B; margin-top: 0; font-family: Georgia, serif; border-bottom: 2px solid #EAE3D1; padding-bottom: 15px; margin-bottom: 20px;'>Verse Translations</h3>"
+                
+                if translations_list:
+                    for tr in translations_list:
+                        author = tr.get("author", "Unknown Author")
+                        lang = tr.get("lang", "").capitalize()
+                        text = str(tr.get("text", "")).replace("\n", "<br>")
+                        
+                        trans_html += "<div style='margin-bottom: 20px;'>"
+                        trans_html += f"<div style='font-size: 13px; font-weight: bold; color: #6C3483; text-transform: uppercase; letter-spacing: 0.8px;'>{author} <span style='color:#888;'>• {lang}</span></div>"
+                        
+                        # 🎨 UPGRADED FONT AND SIZE FOR TRANSLATION TEXT
+                        trans_html += f"<div style='font-family: \"Sanskrit 2003\", \"Arial Unicode MS\", sans-serif; font-size: 20px; line-height: 1.6; color: #111; margin-top: 8px;'>{text}</div>"
+                        
+                        trans_html += "</div>"
+                        trans_html += "<hr style='border: none; border-top: 1px dashed #D5CABD; margin: 20px 0;'>"
+                else:
+                    trans_html += "<div style='color: #666; font-style: italic;'>Translations currently unavailable for this verse.</div>"
+                
+                trans_html += "</div>"
+                st.markdown(trans_html, unsafe_allow_html=True)
+
     else:
         st.info("No Gītā verses found in the database. Ensure the SQLite database has been built correctly using the new schema.")
     conn.close()

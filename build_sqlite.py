@@ -29,7 +29,8 @@ def build_database():
             pada_iast TEXT,
             anvaya_sa TEXT,
             anvaya_iast TEXT,
-            analysis TEXT
+            analysis TEXT,
+            translations TEXT
         )
     ''')
 
@@ -56,11 +57,12 @@ def build_database():
                 v_data.get("pada_iast", ""),
                 v_data.get("anvaya_sa", ""),
                 v_data.get("anvaya_iast", ""),
-                json.dumps(v_data.get("analysis", {}), ensure_ascii=False)
+                json.dumps(v_data.get("analysis", {}), ensure_ascii=False),
+                json.dumps(v_data.get("translations", []), ensure_ascii=False)
             ))
 
     if verse_rows:
-        cursor.executemany('INSERT INTO gita_verses VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', verse_rows)
+        cursor.executemany('INSERT INTO gita_verses VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', verse_rows)
         print(f"✅ Inserted {len(verse_rows):,} verses.")
 
     # --- 2. Rebuild Dictionaries ---

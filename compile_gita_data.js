@@ -30,6 +30,9 @@ const glossaryDb = extractObject('glossary-db.js', 'GLOSSARY_DB');
 const verseTextDb = extractObject('verse-text-clean.js', 'VERSE_TEXT_OVERRIDES');
 console.log(`   -> Extracted ${Object.keys(verseTextDb).length} Saṃhitā verse blocks from verse-text-clean.js`);
 
+const translationsDb = extractObject('verse-translations.js', 'VERSE_TRANSLATIONS');
+console.log(`   -> Extracted ${Object.keys(translationsDb).length} translation blocks`);
+
 const compiledData = { verses: {}, dictionaries: { en: glossaryEn, hi: glossaryHi, philosophical: glossaryDb } };
 
 let verseCount = 0;
@@ -43,7 +46,9 @@ for (const [verseId, data] of Object.entries(grammarDb)) {
         pada_iast: data.padaccheda ? data.padaccheda.join(" ") : "",
         anvaya_sa: data.anvaya_sa ? data.anvaya_sa.join(" ") : "",
         anvaya_iast: data.anvaya ? data.anvaya.join(" ") : "",
-        analysis: data.analysis || {}
+        analysis: data.analysis || {},
+
+        translations: translationsDb[verseId] || []
     };
     verseCount++;
 }
