@@ -18,13 +18,15 @@ st.markdown("""
     .badge-sutra { background-color: #E6B97A; color: #4A3515; padding: 4px 10px; border-radius: 12px; font-size: 0.85em; font-weight: bold; }
     .badge-term { background-color: #B5C6D8; color: #1D2A40; padding: 4px 10px; border-radius: 12px; font-size: 0.85em; font-weight: bold; }
     .badge-gita { background-color: #F2C94C; color: #4A3515; padding: 4px 10px; border-radius: 12px; font-size: 0.85em; font-weight: bold; }
+    .badge-philo { background-color: #C1E1C1; color: #1D2A40; padding: 4px 10px; border-radius: 12px; font-size: 0.85em; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
 DB_FILE = "sanskrit_engine.db"
 
 def tokenize_text(text):
-    punctuation_to_strip = "।॥,;:!?()[]{}'\" \n\t\r" 
+    # Now explicitly strips English and Devanagari numbers to keep the table clean
+    punctuation_to_strip = "।॥,;:!?()[]{}'\" \n\t\r0123456789०१२३४५६७८९" 
     raw_words = text.split()
     return [word.strip(punctuation_to_strip) for word in raw_words if word.strip(punctuation_to_strip)]
 
@@ -32,37 +34,59 @@ def query_database(lookup_token):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     
-    cursor.execute('SELECT slp1, typeDisplay, uddeshya, vidheya, meaning, explanation, anuvritti, adhikara, examples, notes FROM sutras WHERE id = ?', (lookup_token,))
-    sutra_result = cursor.fetchone()
-    if sutra_result:
-        conn.close()
-        return {"source": "sutra", "data": sutra_result}
-        
-    cursor.execute('SELECT meaning FROM gita_glossary WHERE word = ?', (lookup_token,))
-    gita_result = cursor.fetchone()
-    if gita_result:
-        conn.close()
-        return {"source": "gita", "data": gita_result}
+    # Auto-convert Devanagari to IAST so we can check both scripts against the JS objects
+    lookup_iast = transliterate(lookup_token, sanscript.DEVANAGARI, sanscript.IAST)
     
-    cursor.execute('SELECT meaning, members, aliases, iast, slp1 FROM ashtadhyayi WHERE word = ?', (lookup_token,))
-    ash_result = cursor.fetchone()
-    if ash_result:
+    # 1. Check Philosophical Glossary
+    cursor.execute('SELECT meaning FROM glossary_philo WHERE word = ? OR word = ?', (lookup_token, lookup_iast))
+    philo_result = cursor.fetchone()
+    if philo_result:
         conn.close()
-        return {"source": "ashtadhyayi", "data": ash_result}
+        return {"source": "philo", "data": philo_result}
+
+    # 2. Check English and Hindi Glossaries (Combined Output)
+    cursor.execute('SELECT meaning FROM glossary_en WHERE word = ? OR word = ?', (lookup_token, lookup_iast))
+    en_res = cursor.fetchone()
     
-    cursor.execute('SELECT pos, meaning FROM dictionary WHERE word = ?', (lookup_token,))
-    primary_results = cursor.fetchall()
-    if primary_results:
+    cursor.execute('SELECT meaning FROM glossary_hi WHERE word = ? OR word = ?', (lookup_token, lookup_iast))
+    hi_res = cursor.fetchone()
+    
+    if en_res or hi_res:
+        meaning_str = ""
+        if en_res: meaning_str += f"**EN:** {en_res[0]}  "
+        if hi_res: meaning_str += f"**HI:** {hi_res[0]}"
         conn.close()
-        return {"source": "primary", "data": primary_results}
+        return {"source": "gita", "data": [meaning_str.strip()]}
+    
+    # 3. Check Base Grammatical Engines
+    try:
+        cursor.execute('SELECT slp1, typeDisplay, uddeshya, vidheya, meaning, explanation, anuvritti, adhikara, examples, notes FROM sutras WHERE id = ?', (lookup_token,))
+        sutra_result = cursor.fetchone()
+        if sutra_result:
+            conn.close()
+            return {"source": "sutra", "data": sutra_result}
+            
+        cursor.execute('SELECT meaning, members, aliases, iast, slp1 FROM ashtadhyayi WHERE word = ?', (lookup_token,))
+        ash_result = cursor.fetchone()
+        if ash_result:
+            conn.close()
+            return {"source": "ashtadhyayi", "data": ash_result}
         
-    cursor.execute('SELECT artha, synonyms, linga FROM amarakosha WHERE word = ?', (lookup_token,))
-    amara_result = cursor.fetchone()
+        cursor.execute('SELECT pos, meaning FROM dictionary WHERE word = ?', (lookup_token,))
+        primary_results = cursor.fetchall()
+        if primary_results:
+            conn.close()
+            return {"source": "primary", "data": primary_results}
+            
+        cursor.execute('SELECT artha, synonyms, linga FROM amarakosha WHERE word = ?', (lookup_token,))
+        amara_result = cursor.fetchone()
+        if amara_result:
+            conn.close()
+            return {"source": "amarakosha", "data": amara_result}
+    except:
+        pass # Silently pass if base tables haven't been generated yet
+        
     conn.close()
-    
-    if amara_result:
-        return {"source": "amarakosha", "data": amara_result}
-        
     return {"source": "none", "data": None}
 
 def colorize_tags(tag_string):
@@ -75,47 +99,7 @@ def colorize_tags(tag_string):
     tag_string = tag_string.replace("Avyaya (Indeclinable)", ":orange[Avyaya]")
     return tag_string
 
-def parse_contextual_meanings(meaning_str):
-    if not meaning_str: return {}
-    mapping = {}
-    pairs = meaning_str.split(';')
-    for pair in pairs:
-        if '—' in pair:
-            parts = pair.split('—', 1)
-        elif ' - ' in pair:
-            parts = pair.split(' - ', 1)
-        else:
-            continue
-            
-        if len(parts) >= 2:
-            raw_iast = parts[0].strip()
-            meaning = parts[1].strip()
-            
-            clean_iast = raw_iast.replace('kṣh', 'kṣ')
-            clean_iast = clean_iast.replace('śht', 'ṣṭ') 
-            clean_iast = clean_iast.replace('śh', 'ś')
-            clean_iast = clean_iast.replace('sh', 'ṣ')
-            clean_iast = clean_iast.replace('ch', 'c')
-            clean_iast = clean_iast.replace('ṛi', 'ṛ')
-            
-            try:
-                # 1. Convert to Devanagari keeping hyphens 
-                deva_key_hyphenated = transliterate(clean_iast, sanscript.IAST, sanscript.DEVANAGARI)
-                # 2. Create a second version without hyphens 
-                deva_key_solid = deva_key_hyphenated.replace("-", "")
-                
-                # Map BOTH versions to the dictionary
-                mapping[deva_key_hyphenated] = meaning
-                mapping[deva_key_solid] = meaning
-            except:
-                mapping[raw_iast] = meaning 
-    return mapping
-
-# --- UPDATED FUNCTION SIGNATURE (Fixes the Line 344 Error) ---
-def process_tokens(tokens, contextual_dict=None):
-    if contextual_dict is None:
-        contextual_dict = {}
-        
+def process_tokens(tokens):
     analysis_results = []
     detailed_views = [] 
     
@@ -124,20 +108,19 @@ def process_tokens(tokens, contextual_dict=None):
         if lookup_token.endswith("ं"):
             lookup_token = lookup_token[:-1] + "म्"
             
-        if token in contextual_dict:
-            meaning = contextual_dict[token]
-            analysis_results.append({"Word": token, "Meaning(s)": meaning, "Status": "✨ Verse Context"})
-            detailed_views.append({"word": token, "status": "contextual", "meaning": meaning})
-            continue
-        elif lookup_token in contextual_dict:
-            meaning = contextual_dict[lookup_token]
-            analysis_results.append({"Word": token, "Meaning(s)": meaning, "Status": "✨ Verse Context"})
-            detailed_views.append({"word": token, "status": "contextual", "meaning": meaning})
-            continue
-            
         db_response = query_database(lookup_token)
         
-        if db_response["source"] == "sutra":
+        if db_response["source"] == "philo":
+            meaning = db_response["data"][0]
+            analysis_results.append({"Word": token, "Meaning(s)": "Philosophical Concept", "Status": "🌟 Tattva"})
+            detailed_views.append({"word": token, "status": "philo", "meaning": meaning})
+            
+        elif db_response["source"] == "gita":
+            meaning = db_response["data"][0]
+            analysis_results.append({"Word": token, "Meaning(s)": meaning, "Status": "✨ Verse Context"})
+            detailed_views.append({"word": token, "status": "gita", "meaning": meaning})
+
+        elif db_response["source"] == "sutra":
             slp1, typeDisp, udd, vid, meaning, expl, anuv, adhi, examples_str, notes = db_response["data"]
             devanagari_sutra = transliterate(slp1, sanscript.SLP1, sanscript.DEVANAGARI)
             examples_list = json.loads(examples_str) if examples_str else []
@@ -147,11 +130,6 @@ def process_tokens(tokens, contextual_dict=None):
                 "type": typeDisp, "udd": udd, "vid": vid, "meaning": meaning, 
                 "expl": expl, "anuv": anuv, "adhi": adhi, "examples": examples_list, "notes": notes
             })
-            
-        elif db_response["source"] == "gita":
-            meaning = db_response["data"][0]
-            analysis_results.append({"Word": token, "Meaning(s)": meaning, "Status": "🕉️ Gītā Glossary"})
-            detailed_views.append({"word": token, "status": "gita", "meaning": meaning})
 
         elif db_response["source"] == "ashtadhyayi":
             meaning, members_str, aliases_str, iast, slp1 = db_response["data"]
@@ -182,10 +160,15 @@ def process_tokens(tokens, contextual_dict=None):
 
 def render_detailed_views(detailed_views):
     for item in detailed_views:
-        if item["status"] == "contextual":
+        if item["status"] == "philo":
+            with st.expander(f"🌟 **{item['word']}** (Philosophical Term)"):
+                st.markdown(f"<span class='badge-philo'>Tattva</span>", unsafe_allow_html=True)
+                st.markdown(f"**Explanation:** {item['meaning']}")
+                
+        elif item["status"] == "gita":
             with st.expander(f"✨ **{item['word']}** (Verse Context)"):
-                st.markdown(f"<span class='badge-gita'>Contextual Definition</span>", unsafe_allow_html=True)
-                st.markdown(f"**Meaning:** {item['meaning']}")
+                st.markdown(f"<span class='badge-gita'>Glossary Definition</span>", unsafe_allow_html=True)
+                st.markdown(item['meaning'])
                 
         elif item["status"] == "sutra":
             with st.expander(f"📜 **Sūtra {item['word']}** - {item['deva']}"):
@@ -211,11 +194,6 @@ def render_detailed_views(detailed_views):
                         
                 if item['notes']:
                     st.info(f"**Notes:** {item['notes']}")
-                    
-        elif item["status"] == "gita":
-            with st.expander(f"🕉️ **{item['word']}** (Gītā Glossary)"):
-                st.markdown(f"<span class='badge-gita'>Contextual Definition</span>", unsafe_allow_html=True)
-                st.markdown(f"**Meaning:** {item['meaning']}")
                 
         elif item["status"] == "ashtadhyayi":
             with st.expander(f"📘 **{item['word']}** (Technical Term)"):
@@ -248,8 +226,8 @@ def color_rows(val):
     elif val == '⚠️ Synonym Match': return 'background-color: #fff3cd; color: black;'
     elif val == '📘 Technical Term': return 'background-color: #B5C6D8; color: black;'
     elif val == '📜 Sūtra': return 'background-color: #E6B97A; color: black;'
-    elif val == '🕉️ Gītā Glossary': return 'background-color: #FFF2CC; color: black;'
     elif val == '✨ Verse Context': return 'background-color: #d1ecf1; color: black;' 
+    elif val == '🌟 Tattva': return 'background-color: #e2f0cb; color: black;' 
     return 'background-color: #e6ffe6; color: black;' if val == '✅ Recognized' else ''
 
 st.markdown("<h1 style='color: #2B3A55; font-family: Georgia, serif;'>Sanskrit Morphological Analyzer</h1>", unsafe_allow_html=True)
@@ -288,8 +266,13 @@ with tab1:
 with tab2:
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("SELECT DISTINCT chapter FROM gita_verses ORDER BY chapter")
-    chapters = [row[0] for row in cursor.fetchall() if row[0] != 0]
+    
+    # Safely get chapters if gita_verses table exists
+    try:
+        cursor.execute("SELECT DISTINCT chapter FROM gita_verses ORDER BY chapter")
+        chapters = [row[0] for row in cursor.fetchall() if row[0] != 0]
+    except sqlite3.OperationalError:
+        chapters = []
     
     if chapters:
         col1, col2 = st.columns(2)
@@ -304,76 +287,89 @@ with tab2:
             
         verse_id = f"{selected_chapter}:{selected_verse}"
         
-        cursor.execute("SELECT text_sa, text_iast, overrides, pada_sa, pada_iast, anvaya_sa, anvaya_iast, translation, explanation, word_meanings FROM gita_verses WHERE id = ?", (verse_id,))
+        # Pulling ONLY from the new schema
+        # Pulling the newly integrated text columns
+        cursor.execute("SELECT text_sa, text_iast, pada_sa, pada_iast, anvaya_sa, anvaya_iast, analysis FROM gita_verses WHERE id = ?", (verse_id,))
         verse_data = cursor.fetchone()
         
         if verse_data:
-            text_sa = json.loads(verse_data[0]) if verse_data[0] else []
-            overrides = json.loads(verse_data[2]) if verse_data[2] else {}
-            pada_sa = verse_data[3]
-            pada_iast = verse_data[4]
-            anvaya_sa = verse_data[5]
-            anvaya_iast = verse_data[6]
-            translation = verse_data[7]
-            explanation = verse_data[8]
-            word_meanings_str = verse_data[9]
+            # 1. Force the database string into a proper Python list
+            raw_sa = verse_data[0]
+            raw_iast = verse_data[1]
+            pada_sa = verse_data[2]
+            pada_iast = verse_data[3]
+            anvaya_sa = verse_data[4]
+            anvaya_iast = verse_data[5]
+
+            try:
+                text_sa_list = json.loads(raw_sa) if raw_sa else []
+                if not isinstance(text_sa_list, list): text_sa_list = []
+            except:
+                text_sa_list = []
+
+            try:
+                text_iast_list = json.loads(raw_iast) if raw_iast else []
+                if not isinstance(text_iast_list, list): text_iast_list = []
+            except:
+                text_iast_list = []
+
+            # 2. Join with HTML line breaks, or fallback ONLY if the list is completely empty
+            formatted_sa = "<br>".join(text_sa_list) if text_sa_list else pada_sa
+            formatted_iast = "<br>".join(text_iast_list) if text_iast_list else pada_iast
             
-            img_path = os.path.join("gita_assets", "images", f"ch{selected_chapter}", f"page_{selected_verse + 1}.webp")
-            if os.path.exists(img_path):
-                st.image(img_path, use_container_width=True)
-            else:
-                st.warning(f"Image not found at path: {img_path}")
+            # 3. Render the Card
+            html_card = f"""
+            <div style="max-width: 900px; margin: 0 auto 20px auto; background-color: #FDFBF7; border: 1px solid #EAE3D1; box-shadow: 2px 4px 10px rgba(0,0,0,0.05);">
+                <div style="background-color: #002B5B; color: white; padding: 12px 25px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 26px; font-weight: bold; letter-spacing: 0.5px;">
+                    Bhagavad Gita Chapter {selected_chapter}.
+                </div>
+                <div style="padding: 30px 40px;">
+                    <div style="color: #4A235A; font-family: 'Segoe UI', sans-serif; font-size: 20px; font-weight: 500; margin-bottom: 15px;">
+                        Verse {selected_verse}.
+                    </div>
+                    <div style="font-family: 'Sanskrit 2003', 'Mangal', sans-serif; font-size: 28px; line-height: 1.6; color: #111; margin-left: 30px; margin-bottom: 30px;">
+                        {formatted_sa}
+                    </div>
+                    <div style="color: #4A235A; font-family: 'Segoe UI', sans-serif; font-size: 20px; font-weight: 500; margin-bottom: 15px;">
+                        Transliteration
+                    </div>
+                    <div style="font-family: 'Arial Unicode MS', 'Segoe UI', sans-serif; font-size: 22px; line-height: 1.6; color: #111; margin-left: 30px;">
+                        {formatted_iast}
+                    </div>
+                </div>
+            </div>
+            """
             
+            st.markdown(html_card, unsafe_allow_html=True)
             st.markdown("---")
             
-            if not text_sa:
-                st.warning("⚠️ Verse text missing. Please ensure your JavaScript files were parsed correctly.")
-            else:
-                v_tab1, v_tab2 = st.tabs(["Saṃhitā Pāṭha", "Pada Anvaya & Morphology"])
-                
-                with v_tab1:
-                    for line in text_sa:
-                        st.markdown(f"**{line}**")
-                        
-                    if translation:
-                        st.markdown("---")
-                        st.markdown(f"**Translation:** {translation}")
-                    if explanation:
-                        st.info(f"**Explanation:** {explanation}")
-                
-                with v_tab2:
-                    if word_meanings_str:
-                        st.markdown("**Contextual Word Meanings:**")
-                        st.caption(word_meanings_str)
-                        st.markdown("---")
-                        
-                    if anvaya_sa:
-                        st.markdown(f"**Anvaya (Prose Order):** {anvaya_sa}")
-                        st.markdown(f"*{anvaya_iast}*")
-                        st.markdown("<br>", unsafe_allow_html=True)
-                        
-                    if pada_sa:
-                        st.markdown(f"**Padapāṭha (Split Words):** {pada_sa}")
-                        st.markdown(f"*{pada_iast}*")
-                        st.markdown("---")
-                        
-                    final_tokens = []
-                    for line in text_sa:
-                        line_tokens = tokenize_text(line)
-                        for w in line_tokens:
-                            if w in overrides:
-                                final_tokens.extend(overrides[w].split())
-                            else:
-                                final_tokens.append(w)
+            # Temporary note acknowledging the translations/samhita are offline while we restructure
+            st.info("💡 **Note:** Saṃhitā Pāṭha and general verse translations are temporarily offline pending integration into the new `grammar-db.js` architecture.")
+            
+            v_tab1, v_tab2 = st.tabs(["Padapāṭha & Anvaya", "Morphology Analyzer"])
+            
+            with v_tab1:
+                if anvaya_sa:
+                    st.markdown(f"**Anvaya (Prose Order):** {anvaya_sa}")
+                    st.markdown(f"*{anvaya_iast}*")
+                    st.markdown("<br>", unsafe_allow_html=True)
                     
-                    contextual_dict = parse_contextual_meanings(word_meanings_str)
-                    analysis_results, detailed_views = process_tokens(final_tokens, contextual_dict)
-                    
-                    if analysis_results:
-                        df = pd.DataFrame(analysis_results)
-                        st.dataframe(df.style.map(color_rows, subset=['Status']), use_container_width=True, hide_index=True)
-                        st.markdown("<br>", unsafe_allow_html=True)
-                        render_detailed_views(detailed_views)
+                if pada_sa:
+                    st.markdown(f"**Padapāṭha (Split Words):** {pada_sa}")
+                    st.markdown(f"*{pada_iast}*")
+                    st.markdown("---")
+            
+            with v_tab2:
+                # 🚀 NO MORE OVERRIDES! Feed the pre-split Padapāṭha straight to the analyzer
+                final_tokens = tokenize_text(pada_sa) if pada_sa else []
+                
+                analysis_results, detailed_views = process_tokens(final_tokens)
+                
+                if analysis_results:
+                    df = pd.DataFrame(analysis_results)
+                    st.dataframe(df.style.map(color_rows, subset=['Status']), use_container_width=True, hide_index=True)
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    render_detailed_views(detailed_views)
     else:
-        st.info("No Gītā verses found in the database. Ensure the SQLite database has been built correctly.")
+        st.info("No Gītā verses found in the database. Ensure the SQLite database has been built correctly using the new schema.")
     conn.close()
