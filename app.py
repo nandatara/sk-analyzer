@@ -1,6 +1,7 @@
-import streamlit as st
-import sqlite3
+import subprocess
 import os
+import sqlite3
+import streamlit as st
 import pandas as pd
 import re
 import json
@@ -11,14 +12,27 @@ st.set_page_config(page_title="Sanskrit Morphological Analyzer", layout="wide")
 
 st.markdown("""
 <style>
-    .stApp { background-color: #F8F0E3; }
+    .stApp { background-color: #F8F0E3; font-size: 18px !important; }
     header[data-testid="stHeader"] { background-color: #2B3A55 !important; }
+    
     .streamlit-expanderHeader { background-color: #F0E6D2 !important; color: #2B3A55 !important; border-radius: 8px; font-family: 'Georgia', serif; }
     div[data-testid="stExpander"] { background-color: #FAF4EB !important; border: 1px solid #E8DCC4 !important; border-radius: 8px; }
     .badge-sutra { background-color: #E6B97A; color: #4A3515; padding: 4px 10px; border-radius: 12px; font-size: 0.85em; font-weight: bold; }
-    .badge-term { background-color: #B5C6D8; color: #1D2A40; padding: 4px 10px; border-radius: 12px; font-size: 0.85em; font-weight: bold; }
-    .badge-gita { background-color: #F2C94C; color: #4A3515; padding: 4px 10px; border-radius: 12px; font-size: 0.85em; font-weight: bold; }
+    .badge-term { background-color: #B5C6D8; color: #1D2A40; padding: 4px 10px; border-radius: 12px; font-size: 20px; font-weight: bold; }
+    .badge-gita { background-color: #F2C94C; color: #4A3515; padding: 4px 10px; border-radius: 12px; font-size: 20px; font-weight: bold; }
     .badge-philo { background-color: #C1E1C1; color: #1D2A40; padding: 4px 10px; border-radius: 12px; font-size: 0.85em; font-weight: bold; }
+    
+    .devanagari { font-family: 'Sanskrit 2003', 'Noto Sans Devanagari', serif; font-size: 24px !important; }
+
+    .stApp h1 { font-size: 40px !important; }
+    .stApp h2 { font-size: 30px !important; }
+    .stApp h3 { font-size: 24px !important; }
+    .stMarkdown p, .stMarkdown li { font-size: 18px !important; }
+    .stApp label, .stApp .stRadio label { font-size: 17px !important; }
+    .stApp textarea, .stApp input { font-size: 16px !important; }
+    .stApp button { font-size: 16px !important; }
+    .stApp .stTabs [data-baseweb="tab"] { font-size: 18px !important; }
+    .stApp .stSelectbox label { font-size: 18px !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -30,9 +44,110 @@ def tokenize_text(text):
     raw_words = text.split()
     return [word.strip(punctuation_to_strip) for word in raw_words if word.strip(punctuation_to_strip)]
 
+def chop_sandhi_with_rust(word_devanagari):
+    """Passes fused text to the Rust segmenter and returns isolated padas."""
+    try:
+        # 1. Convert to SLP1 for the Rust engine
+        word_slp1 = sanscript.transliterate(word_devanagari, sanscript.DEVANAGARI, sanscript.SLP1)
+        
+        # 2. Call the compiled Rust binary
+        # Get the absolute path to the 'tulya' directory
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # Step UP one level into the 'Projects' directory
+        projects_dir = os.path.dirname(base_dir)
+        
+        # Build the absolute path to the Rust executable
+        rust_binary_path = os.path.join(projects_dir, "vidyut_exporter", "target", "release", "segmenter.exe")
+        
+        print(f"🔍 DEBUG [Path]: Looking for Rust binary at: {rust_binary_path}")
+        
+        result = subprocess.run(
+            [rust_binary_path, word_slp1],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        
+        # 3. Parse the JSON array returned by Rust
+        slp1_splits = json.loads(result.stdout.strip())
+        
+        # 4. Convert back to Devanagari for the UI and DB lookups
+        devanagari_splits = [
+            sanscript.transliterate(split, sanscript.SLP1, sanscript.DEVANAGARI) 
+            for split in slp1_splits
+        ]
+        
+        return devanagari_splits
+        
+    except Exception as e:
+        print(f"Rust Segmentation Error: {e}")
+        return [word_devanagari] # Fallback to the original word if the bridge fails
+
+def get_vidyut_analysis(word_devanagari):
+    """Translates Devanagari to SLP1 and returns ALL Vidyut matches (verbs and nouns)."""
+    try:
+        word_slp1 = sanscript.transliterate(word_devanagari, sanscript.DEVANAGARI, sanscript.SLP1)
+        
+        conn = sqlite3.connect('sanskrit_engine.db')
+        cursor = conn.cursor()
+        
+        results = []
+        
+        # 1. Fetch ALL Verbal Matches
+        cursor.execute("SELECT root, gana, meaning, lakara, purusha, vacana FROM vidyut_verbs WHERE word_slp1 = ?", (word_slp1,))
+        v_matches = cursor.fetchall()
+        for v in v_matches:
+            results.append({
+                "type": "verb",
+                "Root": v[0],
+                "Meaning": v[2],
+                "details": f"**Lakāra:** {v[3]} | **Purusha:** {v[4]} | **Vacana:** {v[5]}"
+            })
+            
+        # 2. Fetch ALL Nominal Matches
+        cursor.execute("SELECT stem, linga, vibhakti, vacana FROM vidyut_subanta WHERE word_slp1 = ?", (word_slp1,))
+        n_matches = cursor.fetchall()
+        for n in n_matches:
+            results.append({
+                "type": "noun",
+                "Stem": n[0],
+                "details": f"**Liṅga:** {n[1]} | **Vibhakti:** {n[2]} | **Vacana:** {n[3]}"
+            })
+            
+        conn.close()
+        
+        # Return the list of all matches, or None if the list is empty
+        return results if results else None
+        
+    except Exception as e:
+        return None
+
 def query_database(lookup_token):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
+
+    # ↓↓↓ ADD THIS BLOCK suggested by LUMO ↓↓↓
+    is_sutra_id = bool(re.match(r'^\d+\.\d+\.\d+$', lookup_token))
+    if is_sutra_id:
+        try:
+            cursor.execute(
+                'SELECT slp1, typeDisplay, uddeshya, vidheya, meaning, '
+                'explanation, anuvritti, adhikara, examples, notes '
+                'FROM sutras WHERE id = ?',
+                (lookup_token,)
+            )
+            sutra_result = cursor.fetchone()
+            if sutra_result:
+                conn.close()
+                return {"source": "sutra", "data": sutra_result}
+        except sqlite3.Error as e:
+            print(f"SQLite error in sutra lookup: {e}")
+        conn.close()
+        return {"source": "none", "data": None}
+    # ↑↑↑ END ADDED BLOCK ↑↑↑
+
+    # ... rest of function unchanged ...
     
     # Auto-convert Devanagari to IAST so we can check both scripts against the JS objects
     lookup_iast = transliterate(lookup_token, sanscript.DEVANAGARI, sanscript.IAST)
@@ -104,58 +219,123 @@ def process_tokens(tokens):
     detailed_views = [] 
     
     for token in tokens:
-        lookup_token = token
-        if lookup_token.endswith("ं"):
-            lookup_token = lookup_token[:-1] + "म्"
+        raw_token = token.strip("॥।.,;: ")
+        if not raw_token:
+            continue
+
+        # 🚀 INTERCEPT SŪTRA IDs FIRST (e.g., 1.1.1) before any sandhi or translation
+        import re
+        if re.match(r'^\d+\.\d+\.\d+$', raw_token):
+            db_response = query_database(raw_token) # Assuming query_database handles the sūtra table lookup
+            if db_response and db_response.get("source") == "sutra":
+                slp1, typeDisp, udd, vid, meaning, expl, anuv, adhi, examples_str, notes = db_response["data"]
+                devanagari_sutra = transliterate(slp1, sanscript.SLP1, sanscript.DEVANAGARI)
+                examples_list = json.loads(examples_str) if examples_str else []
+                
+                analysis_results.append({"Word": raw_token, "Meaning(s)": "Pāṇinian Sūtra", "Status": "📜 Sūtra"})
+                detailed_views.append({
+                    "word": raw_token, "status": "sutra", "slp1": slp1, "deva": devanagari_sutra,
+                    "type": typeDisp, "udd": udd, "vid": vid, "meaning": meaning, 
+                    "expl": expl, "anuv": anuv, "adhi": adhi, "examples": examples_list, "notes": notes
+                })
+                continue # Skip sandhi segmentation and dictionary checks for sūtra IDs!
             
-        db_response = query_database(lookup_token)
+        # 1. Pass the raw token through the Rust Sandhi segmenter
+        chopped_padas = chop_sandhi_with_rust(raw_token)
         
-        if db_response["source"] == "philo":
-            meaning = db_response["data"][0]
-            analysis_results.append({"Word": token, "Meaning(s)": "Philosophical Concept", "Status": "🌟 Tattva"})
-            detailed_views.append({"word": token, "status": "philo", "meaning": meaning})
-            
-        elif db_response["source"] == "gita":
-            meaning = db_response["data"][0]
-            analysis_results.append({"Word": token, "Meaning(s)": meaning, "Status": "✨ Verse Context"})
-            detailed_views.append({"word": token, "status": "gita", "meaning": meaning})
+        # 2. INNER LOOP: Process each chopped piece individually
+        for lookup_token in chopped_padas:
+            # Normalization
+            if lookup_token.endswith("ं"):
+                lookup_token = lookup_token[:-1] + "म्"
+                
+            # Check Vidyut Engine First
+            # ---------------------------------------------------------
+            # 2. Check Vidyut Engine First (Now handles multiple matches)
+            # ---------------------------------------------------------
 
-        elif db_response["source"] == "sutra":
-            slp1, typeDisp, udd, vid, meaning, expl, anuv, adhi, examples_str, notes = db_response["data"]
-            devanagari_sutra = transliterate(slp1, sanscript.SLP1, sanscript.DEVANAGARI)
-            examples_list = json.loads(examples_str) if examples_str else []
-            analysis_results.append({"Word": token, "Meaning(s)": "Pāṇinian Sūtra", "Status": "📜 Sūtra"})
-            detailed_views.append({
-                "word": token, "status": "sutra", "slp1": slp1, "deva": devanagari_sutra,
-                "type": typeDisp, "udd": udd, "vid": vid, "meaning": meaning, 
-                "expl": expl, "anuv": anuv, "adhi": adhi, "examples": examples_list, "notes": notes
-            })
+            vidyut_results = get_vidyut_analysis(lookup_token)
+            
+            if vidyut_results:
+                for vidyut_data in vidyut_results:
+                    if vidyut_data["type"] == "verb":
+                        analysis_results.append({
+                            "Word": lookup_token, 
+                            "Meaning(s)": f"Root: {vidyut_data['Root']} ({vidyut_data.get('Meaning', '')})", 
+                            "Status": "⚙️ Vidyut Verb"
+                        })
+                    else:
+                        analysis_results.append({
+                            "Word": lookup_token, 
+                            "Meaning(s)": f"Stem: {vidyut_data['Stem']}", 
+                            "Status": "⚙️ Vidyut Noun"
+                        })
+                        
+                    detailed_views.append({
+                        "word": lookup_token, 
+                        "status": "vidyut", 
+                        "type": vidyut_data["type"],
+                        "details": vidyut_data["details"]
+                    })
+                    
+                continue # Skip the rest of the dictionary lookups for this word!
+            # ---------------------------------------------------------
+            
+            # 3. Existing Dictionary Logic
+            db_response = query_database(lookup_token)
+            
+            # Safety check in case the database returns None
+            if not db_response:
+                analysis_results.append({"Word": lookup_token, "Meaning(s)": "-", "Status": "❌ Unknown"})
+                detailed_views.append({"word": lookup_token, "status": "unknown"})
+                continue
+            
+            if db_response["source"] == "philo":
+                meaning = db_response["data"][0]
+                analysis_results.append({"Word": lookup_token, "Meaning(s)": "Philosophical Concept", "Status": "🌟 Tattva"})
+                detailed_views.append({"word": lookup_token, "status": "philo", "meaning": meaning})
+                
+            elif db_response["source"] == "gita":
+                meaning = db_response["data"][0]
+                analysis_results.append({"Word": lookup_token, "Meaning(s)": meaning, "Status": "✨ Verse Context"})
+                detailed_views.append({"word": lookup_token, "status": "gita", "meaning": meaning})
 
-        elif db_response["source"] == "ashtadhyayi":
-            meaning, members_str, aliases_str, iast, slp1 = db_response["data"]
-            aliases_list = json.loads(aliases_str) if aliases_str else []
-            members_list = json.loads(members_str) if members_str else []
-            analysis_results.append({"Word": token, "Meaning(s)": meaning, "Status": "📘 Technical Term"})
-            detailed_views.append({
-                "word": token, "status": "ashtadhyayi", "meaning": meaning, 
-                "members": members_list, "aliases": aliases_list, "iast": iast, "slp1": slp1
-            })
-            
-        elif db_response["source"] == "primary":
-            pos_list = [row[0] for row in db_response["data"]]
-            unique_meanings = " | ".join(set([row[1] for row in db_response["data"]]))
-            analysis_results.append({"Word": token, "Meaning(s)": unique_meanings, "Status": "✅ Recognized"})
-            detailed_views.append({"word": token, "status": "primary", "meanings": unique_meanings, "tags": pos_list})
-            
-        elif db_response["source"] == "amarakosha":
-            artha, synonyms, linga = db_response["data"]
-            analysis_results.append({"Word": token, "Meaning(s)": artha, "Status": "⚠️ Synonym Match"})
-            detailed_views.append({"word": token, "status": "amara", "meanings": artha, "synonyms": synonyms, "linga": linga})
-            
-        else:
-            analysis_results.append({"Word": token, "Meaning(s)": "-", "Status": "❌ Unknown"})
-            detailed_views.append({"word": token, "status": "unknown"})
-            
+            elif db_response["source"] == "sutra":
+                slp1, typeDisp, udd, vid, meaning, expl, anuv, adhi, examples_str, notes = db_response["data"]
+                devanagari_sutra = transliterate(slp1, sanscript.SLP1, sanscript.DEVANAGARI)
+                examples_list = json.loads(examples_str) if examples_str else []
+                analysis_results.append({"Word": lookup_token, "Meaning(s)": "Pāṇinian Sūtra", "Status": "📜 Sūtra"})
+                detailed_views.append({
+                    "word": lookup_token, "status": "sutra", "slp1": slp1, "deva": devanagari_sutra,
+                    "type": typeDisp, "udd": udd, "vid": vid, "meaning": meaning, 
+                    "expl": expl, "anuv": anuv, "adhi": adhi, "examples": examples_list, "notes": notes
+                })
+
+            elif db_response["source"] == "ashtadhyayi":
+                meaning, members_str, aliases_str, iast, slp1 = db_response["data"]
+                aliases_list = json.loads(aliases_str) if aliases_str else []
+                members_list = json.loads(members_str) if members_str else []
+                analysis_results.append({"Word": lookup_token, "Meaning(s)": meaning, "Status": "📘 Technical Term"})
+                detailed_views.append({
+                    "word": lookup_token, "status": "ashtadhyayi", "meaning": meaning, 
+                    "members": members_list, "aliases": aliases_list, "iast": iast, "slp1": slp1
+                })
+                
+            elif db_response["source"] == "primary":
+                pos_list = [row[0] for row in db_response["data"]]
+                unique_meanings = " | ".join(set([row[1] for row in db_response["data"]]))
+                analysis_results.append({"Word": lookup_token, "Meaning(s)": unique_meanings, "Status": "✅ Recognized"})
+                detailed_views.append({"word": lookup_token, "status": "primary", "meanings": unique_meanings, "tags": pos_list})
+                
+            elif db_response["source"] == "amarakosha":
+                artha, synonyms, linga = db_response["data"]
+                analysis_results.append({"Word": lookup_token, "Meaning(s)": artha, "Status": "⚠️ Synonym Match"})
+                detailed_views.append({"word": lookup_token, "status": "amara", "meanings": artha, "synonyms": synonyms, "linga": linga})
+                
+            else:
+                analysis_results.append({"Word": lookup_token, "Meaning(s)": "-", "Status": "❌ Unknown"})
+                detailed_views.append({"word": lookup_token, "status": "unknown"})
+                
     return analysis_results, detailed_views
 
 def render_detailed_views(detailed_views):
@@ -216,6 +396,12 @@ def render_detailed_views(detailed_views):
                 st.markdown(f"**Meaning:** {item['meanings']} | **Gender:** {item['linga'] or 'N/A'}")
                 syn_list = item["synonyms"].split(", ")
                 st.markdown(" ".join([f"`{s}`" for s in syn_list]))
+
+        elif item["status"] == "vidyut":
+            title = "Vidyut Verb" if item.get("type") == "verb" else "Vidyut Noun"
+            with st.expander(f"⚙️ {item['word']} ({title})"):
+                st.markdown(f"**Vidyut Morphological Analysis:**")
+                st.markdown(item["details"])        
                 
         else:
             with st.expander(f"❌ **{item['word']}** - Unknown"):
@@ -232,7 +418,7 @@ def color_rows(val):
 
 st.markdown("<h1 style='color: #2B3A55; font-family: Georgia, serif;'>Sanskrit Morphological Analyzer</h1>", unsafe_allow_html=True)
 
-tab1, tab2 = st.tabs(["Morphological Analyzer", "Gītā Explorer"])
+tab1, tab2, tab3 = st.tabs(["Morphological Analyzer", "Gītā Explorer", "Aṣṭādhyāyī"])
 
 with tab1:
     input_scheme = st.radio("Select Input Script:", ["Devanagari", "IAST", "SLP1"], horizontal=True)
@@ -243,20 +429,43 @@ with tab1:
             st.warning("Please enter some text.")
         else:
             is_sutra_id = bool(re.match(r'^\d+\.\d+\.\d+$', user_input.strip()))
-            
-            if not is_sutra_id:
-                if input_scheme == "IAST":
-                    devanagari_text = transliterate(user_input, sanscript.IAST, sanscript.DEVANAGARI)
-                elif input_scheme == "SLP1":
-                    devanagari_text = transliterate(user_input, sanscript.SLP1, sanscript.DEVANAGARI)
-                else:
-                    devanagari_text = user_input
+
+        if is_sutra_id:
+            # ── Sūtra ID path: bypass tokenize/process entirely ──
+            sutra_id = user_input.strip()
+            result = query_database(sutra_id)
+            if result["source"] == "sutra" and result["data"]:
+                row = result["data"]
+                slp1, typeDisp, udd, vid, meaning, expl, anuv, adhi, examples_str, notes = row
+                devanagari_sutra = transliterate(slp1, sanscript.SLP1, sanscript.DEVANAGARI)
+                examples_list = json.loads(examples_str) if examples_str else []
+
+                st.markdown(f"### Sūtra {sutra_id}")
+                st.markdown(f"**Devanagari:** <span class='devanagari'>{devanagari_sutra}</span>", unsafe_allow_html=True)
+                st.markdown(f"**Type:** <span class='devanagari'>{typeDisp}</span>", unsafe_allow_html=True)
+                st.markdown(f"**Uddeśya:** <span class='devanagari'>{udd}</span>", unsafe_allow_html=True)
+                st.markdown(f"**Vidheya:** <span class='devanagari'>{vid}</span>", unsafe_allow_html=True)
+                st.markdown(f"**Meaning:** <span class='devanagari'>{meaning}</span>", unsafe_allow_html=True)
+                st.markdown(f"**Explanation:** <span class='devanagari'>{expl}</span>", unsafe_allow_html=True)
+                st.markdown(f"**Anuvṛtti:** <span class='devanagari'>{anuv}</span>", unsafe_allow_html=True)
+                st.markdown(f"**Adhikāra:** <span class='devanagari'>{adhi}</span>", unsafe_allow_html=True)
+                st.markdown(f"**Examples:** <span class='devanagari'>{', '.join(ex.get('word', str(ex)) for ex in examples_list)}</span>", unsafe_allow_html=True)
+                st.markdown(f"**Notes:** <span class='devanagari'>{notes}</span>", unsafe_allow_html=True)
             else:
-                devanagari_text = user_input.strip()
+                st.info(f"No sūtra found for ID: {sutra_id}")
+
+        else:
+            # ── Normal Sanskrit text path: original logic ──
+            if input_scheme == "IAST":
+                devanagari_text = transliterate(user_input, sanscript.IAST, sanscript.DEVANAGARI)
+            elif input_scheme == "SLP1":
+                devanagari_text = transliterate(user_input, sanscript.SLP1, sanscript.DEVANAGARI)
+            else:
+                devanagari_text = user_input
 
             tokens = tokenize_text(devanagari_text)
             analysis_results, detailed_views = process_tokens(tokens)
-            
+
             if analysis_results:
                 df = pd.DataFrame(analysis_results)
                 st.dataframe(df.style.map(color_rows, subset=['Status']), use_container_width=True, hide_index=True)
@@ -377,10 +586,10 @@ with tab2:
                         text = str(tr.get("text", "")).replace("\n", "<br>")
                         
                         trans_html += "<div style='margin-bottom: 20px;'>"
-                        trans_html += f"<div style='font-size: 13px; font-weight: bold; color: #6C3483; text-transform: uppercase; letter-spacing: 0.8px;'>{author} <span style='color:#888;'>• {lang}</span></div>"
+                        trans_html += f"<div style='font-size: 20px; font-weight: bold; color: #6C3483; text-transform: uppercase; letter-spacing: 0.8px;'>{author} <span style='color:#888;'>• {lang}</span></div>"
                         
                         # 🎨 UPGRADED FONT AND SIZE FOR TRANSLATION TEXT
-                        trans_html += f"<div style='font-family: \"Sanskrit 2003\", \"Arial Unicode MS\", sans-serif; font-size: 20px; line-height: 1.6; color: #111; margin-top: 8px;'>{text}</div>"
+                        trans_html += f"<div style='font-family: \"Sanskrit 2003\", \"Arial Unicode MS\", sans-serif; font-size: 24px; line-height: 1.6; color: #111; margin-top: 8px;'>{text}</div>"
                         
                         trans_html += "</div>"
                         trans_html += "<hr style='border: none; border-top: 1px dashed #D5CABD; margin: 20px 0;'>"
@@ -393,3 +602,52 @@ with tab2:
     else:
         st.info("No Gītā verses found in the database. Ensure the SQLite database has been built correctly using the new schema.")
     conn.close()
+
+with tab3:
+    st.markdown("## Aṣṭādhyāyī Browser")
+
+    adhyaya = st.selectbox("Adhyāya", list(range(1, 9)), key="adhyaya")
+    paada = st.selectbox("Pāda", list(range(1, 5)), key="paada")
+
+    if st.button("Load Sūtras", key="load_sutras"):
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT id, slp1, typeDisplay, uddeshya, vidheya, meaning, '
+            'explanation, anuvritti, adhikara, examples, notes '
+            'FROM sutras WHERE id LIKE ? ORDER BY id',
+            (f"{adhyaya}.{paada}.%",)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        # Natural sort by sutra ID
+        import re
+        rows.sort(key=lambda r: [int(x) for x in r[0].split('.')])
+
+        if rows:
+            for row in rows:
+                sutra_id, slp1, typeDisp, udd, vid, meaning, expl, anuv, adhi, examples_str, notes = row
+                devanagari_sutra = transliterate(slp1, sanscript.SLP1, sanscript.DEVANAGARI)
+                examples_list = json.loads(examples_str) if examples_str else []
+
+                with st.expander(f"{sutra_id} — {devanagari_sutra}"):
+                    st.markdown(f"### Sūtra {sutra_id}")
+                    st.markdown(f"**Devanagari:** <span class='devanagari'>{devanagari_sutra}</span>", unsafe_allow_html=True)
+                    st.markdown(f"**Type:** <span class='devanagari'>{typeDisp}</span>", unsafe_allow_html=True)
+                    st.markdown(f"**Uddeśya:** <span class='devanagari'>{udd}</span>", unsafe_allow_html=True)
+                    st.markdown(f"**Vidheya:** <span class='devanagari'>{vid}</span>", unsafe_allow_html=True)
+                    st.markdown(f"**Meaning:** <span class='devanagari'>{meaning}</span>", unsafe_allow_html=True)
+                    st.markdown(f"**Explanation:** <span class='devanagari'>{expl}</span>", unsafe_allow_html=True)
+                    st.markdown(f"**Anuvṛtti:** <span class='devanagari'>{anuv}</span>", unsafe_allow_html=True)
+                    st.markdown(f"**Adhikāra:** <span class='devanagari'>{adhi}</span>", unsafe_allow_html=True)
+                    st.markdown("**Examples:**", unsafe_allow_html=True)
+                    if examples_list:
+                        for ex in examples_list:
+                            ex_deva = transliterate(ex["slp1"], sanscript.SLP1, sanscript.DEVANAGARI)
+                            st.markdown(f"- <span class='devanagari'><b>{ex_deva}</b></span> ({ex['slp1']}): {ex['note']}", unsafe_allow_html=True)
+                    else:
+                        st.markdown("None")
+                    st.markdown(f"**Notes:** <span class='devanagari'>{notes}</span>", unsafe_allow_html=True)
+        else:
+            st.info(f"No sūtras found for {adhyaya}.{paada}")
