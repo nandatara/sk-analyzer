@@ -418,7 +418,16 @@ def color_rows(val):
 
 st.markdown("<h1 style='color: #2B3A55; font-family: Georgia, serif;'>Sanskrit Morphological Analyzer</h1>", unsafe_allow_html=True)
 
-tab1, tab2, tab3 = st.tabs(["Morphological Analyzer", "Gītā Explorer", "Aṣṭādhyāyī"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+    "Morphological Analyzer",
+    "Gītā Explorer",
+    "Aṣṭādhyāyī",
+    "Gītā Dictionary",
+    "Gītā Statistics",
+    "Speaker Analysis",
+    "Chapter Browser",
+    "Chronological Index"
+])
 
 with tab1:
     input_scheme = st.radio("Select Input Script:", ["Devanagari", "IAST", "SLP1"], horizontal=True)
@@ -651,3 +660,269 @@ with tab3:
                     st.markdown(f"**Notes:** <span class='devanagari'>{notes}</span>", unsafe_allow_html=True)
         else:
             st.info(f"No sūtras found for {adhyaya}.{paada}")
+
+# ═══════════════════════════════════════════════════════════════
+# TAB 4: Gītā Dictionary
+# ═══════════════════════════════════════════════════════════════
+with tab4:
+    st.markdown("## Gītā Dictionary")
+    st.markdown("Search Sanskrit words from the Bhagavad Gītā with verse references and meanings.")
+
+    conn_gita = sqlite3.connect("gita_analytics.db")
+    cursor_gita = conn_gita.cursor()
+
+    search_query = st.text_input("Search word (Devanagari or IAST):", key="gita_dict_search")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        search_type = st.radio("Search by:", ["Contains", "Exact match"], horizontal=True, key="gita_dict_type")
+    with col2:
+        only_with_meanings = st.checkbox("Only show words with meanings", key="gita_dict_meanings_only")
+
+    if st.button("Search", key="gita_dict_btn"):
+        if search_query.strip():
+            q = search_query.strip()
+            if search_type == "Exact match":
+                cursor_gita.execute(
+                    '''SELECT devanagari, iast, verses, occurrence_count, meanings, has_meaning
+                       FROM gita_crossref
+                       WHERE devanagari = ? OR iast = ?
+                       ORDER BY occurrence_count DESC''',
+                    (q, q)
+                )
+            else:
+                cursor_gita.execute(
+                    '''SELECT devanagari, iast, verses, occurrence_count, meanings, has_meaning
+                       FROM gita_crossref
+                       WHERE devanagari LIKE ? OR iast LIKE ?
+                       ORDER BY occurrence_count DESC
+                       LIMIT 100''',
+                    (f"%{q}%", f"%{q}%")
+                )
+        else:
+            # Show all, optionally filtered
+            if only_with_meanings:
+                cursor_gita.execute(
+                    '''SELECT devanagari, iast, verses, occurrence_count, meanings, has_meaning
+                       FROM gita_crossref WHERE has_meaning = 1
+                       ORDER BY devanagari LIMIT 100'''
+                )
+            else:
+                cursor_gita.execute(
+                    '''SELECT devanagari, iast, verses, occurrence_count, meanings, has_meaning
+                       FROM gita_crossref ORDER BY devanagari LIMIT 100'''
+                )
+
+        results = cursor_gita.fetchall()
+
+        if results:
+            st.success(f"Found {len(results)} words")
+            for row in results:
+                deva, iast, verses_json, occ_count, meanings_json, has_meaning = row
+                verses = json.loads(verses_json)
+                meanings = json.loads(meanings_json) if meanings_json else []
+
+                with st.expander(f"{deva} ({iast}) — {occ_count}x in {len(verses)} verses"):
+                    st.markdown(f"<span class='devanagari'><b>{deva}</b></span> ({iast})", unsafe_allow_html=True)
+                    st.markdown(f"**Occurrences:** {occ_count}")
+                    st.markdown(f"**Verses:** {', '.join(verses[:20])}" + ("..." if len(verses) > 20 else ""))
+
+                    if meanings:
+                        for m in meanings:
+                            st.markdown(f"**{m['source'].upper()}:** <span class='devanagari'>{m['value']}</span>", unsafe_allow_html=True)
+                    else:
+                        st.markdown("*No glossary meaning found*")
+        else:
+            st.info("No matching words found.")
+
+    conn_gita.close()
+
+
+# ═══════════════════════════════════════════════════════════════
+# TAB 5: Gītā Statistics
+# ═══════════════════════════════════════════════════════════════
+with tab5:
+    st.markdown("## Gītā Statistics")
+
+    conn_gita = sqlite3.connect("gita_analytics.db")
+    cursor_gita = conn_gita.cursor()
+
+    # Overall stats
+    cursor_gita.execute("SELECT COUNT(*) FROM gita_words")
+    total_unique = cursor_gita.fetchone()[0]
+    cursor_gita.execute("SELECT SUM(occurrence_count) FROM gita_words")
+    total_occ = cursor_gita.fetchone()[0]
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Unique Words", f"{total_unique:,}")
+    with col2:
+        st.metric("Total Occurrences", f"{total_occ:,}")
+    with col3:
+        cursor_gita.execute("SELECT COUNT(*) FROM gita_crossref WHERE has_meaning = 1")
+        matched = cursor_gita.fetchone()[0]
+        st.metric("Words with Meanings", f"{matched:,} ({100*matched/total_unique:.0f}%)")
+
+    st.markdown("---")
+
+    # Top 10 by frequency
+    st.markdown("### Top 10 Most Frequent Words")
+    cursor_gita.execute("SELECT devanagari, iast, frequency, rank FROM gita_frequency ORDER BY rank LIMIT 10")
+    freq_rows = cursor_gita.fetchall()
+    freq_data = [{"rank": r[3], "word": r[0], "iast": r[1], "frequency": r[2]} for r in freq_rows]
+    if freq_data:
+        import pandas as pd
+        df_freq = pd.DataFrame(freq_data)
+        df_freq["display"] = df_freq.apply(lambda r: f"{r['word']} ({r['iast']})", axis=1)
+        st.bar_chart(df_freq.set_index("display")["frequency"], use_container_width=True)
+
+    st.markdown("---")
+
+    # Top 10 longest words
+    st.markdown("### Top 10 Longest Words")
+    cursor_gita.execute("SELECT devanagari, iast, length, frequency FROM gita_longest_words ORDER BY length DESC LIMIT 10")
+    longest_rows = cursor_gita.fetchall()
+    for i, row in enumerate(longest_rows, 1):
+        st.markdown(f"{i}. <span class='devanagari'>{row[0]}</span> ({row[1]}) — {row[2]} chars, {row[3]}x", unsafe_allow_html=True)
+
+    conn_gita.close()
+
+
+# ═══════════════════════════════════════════════════════════════
+# TAB 6: Speaker Analysis
+# ═══════════════════════════════════════════════════════════════
+with tab6:
+    st.markdown("## Speaker Analysis")
+
+    conn_gita = sqlite3.connect("gita_analytics.db")
+    cursor_gita = conn_gita.cursor()
+
+    # Speaker summary
+    st.markdown("### Speakers in the Bhagavad Gītā")
+    cursor_gita.execute("SELECT speaker, verse_ids FROM gita_speakers")
+    speaker_rows = cursor_gita.fetchall()
+
+    import pandas as pd
+    speaker_data = []
+    for sp, vids_json in speaker_rows:
+        vids = json.loads(vids_json)
+        speaker_data.append({"Speaker": sp, "Verses Spoken": len(vids)})
+    df_sp = pd.DataFrame(speaker_data)
+    st.dataframe(df_sp, use_container_width=True, hide_index=True)
+    st.bar_chart(df_sp.set_index("Speaker")["Verses Spoken"], use_container_width=True)
+
+    st.markdown("---")
+
+    # Epithets
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("### 🔄 Krishna's Epithets")
+        cursor_gita.execute("SELECT devanagari, english, count, explanation FROM gita_epithets WHERE belongs_to = 'Krishna' AND count > 0 ORDER BY count DESC")
+        krishna_eps = cursor_gita.fetchall()
+        for ep in krishna_eps:
+            with st.expander(f"{ep[0]} ({ep[1]}) — {ep[2]}x"):
+                st.markdown(f"<span class='devanagari'>{ep[3]}</span>", unsafe_allow_html=True)
+
+    with col2:
+        st.markdown("### 🏹 Arjuna's Epithets")
+        cursor_gita.execute("SELECT devanagari, english, count, explanation FROM gita_epithets WHERE belongs_to = 'Arjuna' AND count > 0 ORDER BY count DESC")
+        arjuna_eps = cursor_gita.fetchall()
+        for ep in arjuna_eps:
+            with st.expander(f"{ep[0]} ({ep[1]}) — {ep[2]}x"):
+                st.markdown(f"<span class='devanagari'>{ep[3]}</span>", unsafe_allow_html=True)
+
+    conn_gita.close()
+
+
+# ═══════════════════════════════════════════════════════════════
+# TAB 7: Chapter Browser
+# ═══════════════════════════════════════════════════════════════
+with tab7:
+    st.markdown("## Chapter Browser")
+
+    conn_gita = sqlite3.connect("gita_analytics.db")
+    cursor_gita = conn_gita.cursor()
+
+    # Chapter overview
+    cursor_gita.execute("SELECT chapter_number, total_words, unique_words, verses_in_chapter FROM gita_chapters ORDER BY chapter_number")
+    ch_rows = cursor_gita.fetchall()
+    import pandas as pd
+    ch_data = [{"Chapter": r[0], "Verses": r[3], "Total Words": r[1], "Unique Words": r[2]} for r in ch_rows]
+    df_ch = pd.DataFrame(ch_data)
+    st.dataframe(df_ch, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # Select chapter to drill down
+    ch_selected = st.selectbox("Select chapter for detailed word list:", list(range(1, 19)), key="ch_browser_select")
+
+    cursor_gita.execute(
+        "SELECT word, count, verses FROM gita_chapter_words WHERE chapter_number = ? ORDER BY count DESC LIMIT 50",
+        (ch_selected,)
+    )
+    ch_words = cursor_gita.fetchall()
+
+    if ch_words:
+        st.markdown(f"### Chapter {ch_selected} — Top 50 Words")
+        word_data = [{"Word": r[0], "Count": r[1], "Verses": ', '.join(json.loads(r[2])[:5])} for r in ch_words]
+        df_cw = pd.DataFrame(word_data)
+        st.dataframe(df_cw, use_container_width=True, hide_index=True)
+
+    conn_gita.close()
+
+
+# ═══════════════════════════════════════════════════════════════
+# TAB 8: Chronological Index
+# ═══════════════════════════════════════════════════════════════
+with tab8:
+    st.markdown("## Chronological Word Index")
+    st.markdown("Words ordered by their first appearance in the Gītā.")
+
+    conn_gita = sqlite3.connect("gita_analytics.db")
+    cursor_gita = conn_gita.cursor()
+
+    col1, col2 = st.columns(2)
+    with col1:
+        start_verse = st.text_input("From verse (e.g., 1:1):", value="1:1", key="chrono_start")
+    with col2:
+        end_verse = st.text_input("To verse (e.g., 2:10):", value="2:10", key="chrono_end")
+
+    limit = st.slider("Max words to show:", 10, 500, 100, key="chrono_limit")
+
+    if st.button("Browse", key="chrono_btn"):
+        def verse_sort_key(v):
+            parts = v.split(":")
+            return (int(parts[0]), int(parts[1]))
+
+        cursor_gita.execute(
+            "SELECT word, first_verse, first_position, total_occurrences, verses FROM gita_chronological"
+        )
+        all_rows = cursor_gita.fetchall()
+
+        # Filter by verse range
+        filtered = []
+        for row in all_rows:
+            fv = row[1]
+            if verse_sort_key(fv) >= verse_sort_key(start_verse) and verse_sort_key(fv) <= verse_sort_key(end_verse):
+                filtered.append(row)
+
+        filtered.sort(key=lambda r: (verse_sort_key(r[1]), r[2]))
+        filtered = filtered[:limit]
+
+        if filtered:
+            st.success(f"Showing {len(filtered)} words from {start_verse} to {end_verse}")
+            import pandas as pd
+            chrono_data = [{
+                "Word": r[0],
+                "First Verse": r[1],
+                "Position": r[2],
+                "Total Occurrences": r[3],
+                "All Verses": ', '.join(json.loads(r[4])[:10])
+            } for r in filtered]
+            df_chrono = pd.DataFrame(chrono_data)
+            st.dataframe(df_chrono, use_container_width=True, hide_index=True)
+        else:
+            st.info("No words found in this range.")
+
+    conn_gita.close()
